@@ -39,6 +39,9 @@ products = [
 # DB insert function
 def insert_order(product_name, price):
     try:
+        # Debug print to verify password is coming in
+        print("🔒 Password value:", os.environ.get("SQL_PASSWORD"))
+
         conn = pyodbc.connect(
             f"Driver={{ODBC Driver 17 for SQL Server}};"
             f"Server={os.environ['SQL_SERVER']};"

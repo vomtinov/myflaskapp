@@ -39,7 +39,8 @@ products = [
 # DB insert function
 def insert_order(product_name, price):
     try:
-        # Debug print to verify password is coming in
+        print("🔒 SQL Server:", os.environ.get("SQL_SERVER"))
+        print("🔒 Username:", os.environ.get("SQL_USERNAME"))
         print("🔒 Password value:", os.environ.get("SQL_PASSWORD"))
 
         conn = pyodbc.connect(
@@ -72,6 +73,7 @@ def home():
 # Buy route → store order in DB
 @app.route('/buy/<int:product_id>')
 def buy(product_id):
+    print(f"🛍️ Buy clicked for Product ID: {product_id}")
     product = next((p for p in products if p["id"] == product_id), None)
     if product:
         price = int(product["price"].replace("₹", ""))

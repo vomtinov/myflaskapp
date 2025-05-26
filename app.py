@@ -1,4 +1,6 @@
 from flask import Flask, render_template, redirect, url_for
+import os
+import pyodbc
 
 app = Flask(__name__)
 
@@ -34,16 +36,46 @@ products = [
     }
 ]
 
+# DB insert function
+def insert_order(product_name, price):
+    try:
+        conn = pyodbc.connect(
+            f"Driver={{ODBC Driver 17 for SQL Server}};"
+            f"Server={os.environ['SQL_SERVER']};"
+            f"Database={os.environ['SQL_DATABASE']};"
+            f"Uid={os.environ['SQL_USERNAME']};"
+            f"Pwd={os.environ['SQL_PASSWORD']};"
+            f"Encrypt=yes;"
+            f"TrustServerCertificate=no;"
+            f"Connection Timeout=30;"
+        )
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO orders (product_name, price, status) VALUES (?, ?, ?)",
+            product_name, price, 'Ordered'
+        )
+        conn.commit()
+        cursor.close()
+        conn.close()
+        print("✅ Order inserted successfully.")
+    except Exception as e:
+        print("❌ DB Error:", e)
+
+# Home route
 @app.route('/')
 def home():
     return render_template("home.html", products=products)
 
+# Buy route → store order in DB
 @app.route('/buy/<int:product_id>')
 def buy(product_id):
     product = next((p for p in products if p["id"] == product_id), None)
     if product:
+        price = int(product["price"].replace("₹", ""))
+        insert_order(product["name"], price)
         return render_template("delivery.html", product=product)
     return "Product not found", 404
 
+# Run locally (ignored on Azure)
 if __name__ == '__main__':
     app.run(host="0.0.0.0", port=8000)

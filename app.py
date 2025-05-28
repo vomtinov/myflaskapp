@@ -10,28 +10,27 @@ from azure.storage.blob import (
 )
 from datetime import datetime, timedelta
 
-# Logging setup
+# ---------------- Logging ----------------
 logging.basicConfig(level=logging.INFO)
-
 app = Flask(__name__)
 
-# Load environment variables
+# ---------------- Environment Variables ----------------
 account_name     = os.environ.get('STORAGE_ACCOUNT_NAME')
 account_key      = os.environ.get('STORAGE_ACCOUNT_KEY')
-html_container   = os.environ.get('BLOB_CONTAINER_HTML', '$web')  # Public static website
+html_container   = os.environ.get('BLOB_CONTAINER_HTML', '$web')
 image_container  = os.environ.get('BLOB_CONTAINER_IMAGES')
 sql_server       = os.environ.get('SQL_SERVER')
 sql_db           = os.environ.get('SQL_DATABASE')
 sql_user         = os.environ.get('SQL_USERNAME')
 sql_pass         = os.environ.get('SQL_PASSWORD')
 
-# Blob service client
+# ---------------- Azure Blob Service ----------------
 blob_service = BlobServiceClient(
     f"https://{account_name}.blob.core.windows.net",
     credential=account_key
 )
 
-# Product list
+# ---------------- Sample Product Catalog ----------------
 products = [
     {"id": 1, "category": "Pants",  "name": "Adidas Pants",    "price": "₹1999", "blob": "adidas_pant.jpg"},
     {"id": 2, "category": "Pants",  "name": "Puma Pants",      "price": "₹1799", "blob": "puma_pant.jpg"},
@@ -39,6 +38,7 @@ products = [
     {"id": 4, "category": "Shirts", "name": "Puma T-Shirt",    "price": "₹1399", "blob": "puma_tshirt.jpg"}
 ]
 
+# ---------------- Generate SAS URL for Blob ----------------
 def generate_sas_url(container, blob_name, expiry_hours=24):
     try:
         sas_token = generate_blob_sas(
@@ -51,19 +51,21 @@ def generate_sas_url(container, blob_name, expiry_hours=24):
         )
         return f"https://{account_name}.blob.core.windows.net/{container}/{blob_name}?{sas_token}"
     except Exception as e:
-        logging.error(f"SAS URL generation failed: {e}")
+        logging.error(f"Failed to generate SAS URL: {e}")
         return ""
 
-def fetch_html_from_blob(filename):
+# ---------------- Fetch HTML Content from $web ----------------
+def fetch_html_from_blob(html_filename):
     try:
-        url = f"https://{account_name}.z22.web.core.windows.net/{filename}"
-        response = requests.get(url)
-        response.raise_for_status()
-        return response.text
+        sas_url = generate_sas_url(html_container, html_filename)
+        resp = requests.get(sas_url)
+        resp.raise_for_status()
+        return resp.text
     except Exception as e:
-        logging.error(f"Error fetching HTML: {e}")
-        return "<h1>Content failed to load</h1>"
+        logging.error(f"Error fetching HTML from blob: {e}")
+        return "<h1>Could not load content</h1>"
 
+# ---------------- Insert Order into SQL DB ----------------
 def insert_order(product_name, price):
     try:
         conn = pyodbc.connect(
@@ -74,18 +76,19 @@ def insert_order(product_name, price):
             f"Pwd={sql_pass};"
             f"Encrypt=yes;TrustServerCertificate=no;Connection Timeout=30;"
         )
-        cursor = conn.cursor()
-        cursor.execute(
+        cur = conn.cursor()
+        cur.execute(
             "INSERT INTO orders (product_name, price, status) VALUES (?, ?, ?)",
             product_name, price, 'Ordered'
         )
         conn.commit()
-        cursor.close()
+        cur.close()
         conn.close()
-        logging.info(f"Order inserted: {product_name}")
+        logging.info(f"Inserted order for: {product_name}")
     except Exception as e:
         logging.error(f"Database insertion failed: {e}")
 
+# ---------------- Home Page Route ----------------
 @app.route('/')
 def home():
     try:
@@ -95,8 +98,9 @@ def home():
         return render_template_string(html, products=products)
     except Exception as e:
         logging.error(f"Home route failed: {e}")
-        return "<h1>Failed to load home</h1>"
+        return "<h1>Failed to load home page</h1>"
 
+# ---------------- Buy Page Route ----------------
 @app.route('/buy/<int:product_id>')
 def buy(product_id):
     try:
@@ -111,9 +115,11 @@ def buy(product_id):
         logging.error(f"Buy route failed: {e}")
         return "<h1>Failed to process order</h1>"
 
+# ---------------- Health Check ----------------
 @app.route('/health')
 def health():
     return "OK", 200
 
+# ---------------- Start Server ----------------
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8000)

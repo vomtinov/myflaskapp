@@ -1,3 +1,4 @@
+# .github/workflows/main_manish-webapp.yml
 name: Build and deploy Python app to Azure Web App - manish-webapp
 
 on:
@@ -14,6 +15,11 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y unixodbc-dev gcc g++
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -78,6 +84,6 @@ jobs:
       - name: Deploy to Azure Web App
         uses: azure/webapps-deploy@v3
         with:
-          app-name:    'manish-webapp'
-          slot-name:   'production'
-          package:     'release.zip'
+          app-name:  'manish-webapp'
+          slot-name: 'production'
+          package:   'release.zip'

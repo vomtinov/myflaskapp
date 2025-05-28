@@ -1,4 +1,4 @@
 Flask==2.2.5
 pyodbc==4.0.34
-azure-storage-blob==12.20.1
+azure-storage-blob==12.20.0
 requests==2.31.0

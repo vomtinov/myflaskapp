@@ -44,15 +44,13 @@ def generate_sas_url(container: str, blob_name: str, expiry_hours=1) -> str:
     return f"https://{account_name}.blob.core.windows.net/{container}/{blob_name}?{sas_token}"
 
 def fetch_html_from_blob(html_filename: str) -> str:
-    """Fetches raw HTML from the $web (static website) container."""
-    url = f"https://{account_name}.z22.web.core.windows.net/{html_filename}"
-    # If you didn't enable static website, use a SAS URL instead:
-    # url = generate_sas_url(HTML_CONTAINER, html_filename)
+    """Fetches raw HTML securely from blob using SAS token."""
+    url = generate_sas_url(HTML_CONTAINER, html_filename)
     resp = requests.get(url)
     resp.raise_for_status()
     return resp.text
 
-# DB insert as before
+# DB insert logic
 def insert_order(product_name, price):
     try:
         conn = pyodbc.connect(
@@ -76,27 +74,29 @@ def insert_order(product_name, price):
 
 @app.route('/')
 def home():
-    # Generate SAS URLs for images
-    for p in products:
-        p['image_url'] = generate_sas_url(IMAGE_CONTAINER, p['blob'], expiry_hours=24)
-    # Fetch the static HTML template from blob
-    html = fetch_html_from_blob('home.html')
-    return render_template_string(html, products=products)
+    try:
+        for p in products:
+            p['image_url'] = generate_sas_url(IMAGE_CONTAINER, p['blob'], expiry_hours=24)
+        html = fetch_html_from_blob('home.html')
+        return render_template_string(html, products=products)
+    except Exception as e:
+        return f"<h1>Something broke:</h1><pre>{e}</pre>", 500
 
 @app.route('/buy/<int:product_id>')
 def buy(product_id):
-    product = next((p for p in products if p["id"]==product_id), None)
-    if not product:
-        return "Product not found", 404
+    try:
+        product = next((p for p in products if p["id"]==product_id), None)
+        if not product:
+            return "Product not found", 404
 
-    price_int = int(product['price'].replace("₹",""))
-    insert_order(product['name'], price_int)
+        price_int = int(product['price'].replace("₹",""))
+        insert_order(product['name'], price_int)
 
-    # Regenerate image URL
-    product['image_url'] = generate_sas_url(IMAGE_CONTAINER, product['blob'], expiry_hours=24)
-    # Fetch delivery HTML
-    html = fetch_html_from_blob('delivery.html')
-    return render_template_string(html, product=product)
+        product['image_url'] = generate_sas_url(IMAGE_CONTAINER, product['blob'], expiry_hours=24)
+        html = fetch_html_from_blob('delivery.html')
+        return render_template_string(html, product=product)
+    except Exception as e:
+        return f"<h1>Something broke in /buy:</h1><pre>{e}</pre>", 500
 
 if __name__ == '__main__':
     app.run(host="0.0.0.0", port=8000)

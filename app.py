@@ -19,6 +19,7 @@ account_name     = os.environ.get('STORAGE_ACCOUNT_NAME')
 account_key      = os.environ.get('STORAGE_ACCOUNT_KEY')
 html_container   = os.environ.get('BLOB_CONTAINER_HTML', '$web')
 image_container  = os.environ.get('BLOB_CONTAINER_IMAGES')
+product_container = os.environ.get('BLOB_CONTAINER_PRODUCTS', 'products')
 sql_server       = os.environ.get('SQL_SERVER')
 sql_db           = os.environ.get('SQL_DATABASE')
 sql_user         = os.environ.get('SQL_USERNAME')
@@ -29,14 +30,6 @@ blob_service = BlobServiceClient(
     f"https://{account_name}.blob.core.windows.net",
     credential=account_key
 )
-
-# ---------------- Sample Product Catalog ----------------
-products = [
-    {"id": 1, "category": "Pants",  "name": "Adidas Pants",    "price": "₹1999", "blob": "adidas_pant.jpg"},
-    {"id": 2, "category": "Pants",  "name": "Puma Pants",      "price": "₹1799", "blob": "puma_pant.jpg"},
-    {"id": 3, "category": "Shirts", "name": "Adidas T-Shirt",  "price": "₹1299", "blob": "adidas_tshirt.jpg"},
-    {"id": 4, "category": "Shirts", "name": "Puma T-Shirt",    "price": "₹1399", "blob": "puma_tshirt.jpg"}
-]
 
 # ---------------- Generate SAS URL for Blob ----------------
 def generate_sas_url(container, blob_name, expiry_hours=24):
@@ -65,6 +58,20 @@ def fetch_html_from_blob(html_filename):
         logging.error(f"Error fetching HTML from blob: {e}")
         return "<h1>Could not load content</h1>"
 
+# ---------------- Fetch Product Data from Blob ----------------
+def fetch_products():
+    try:
+        product_json_url = generate_sas_url(product_container, "product.json")
+        resp = requests.get(product_json_url)
+        resp.raise_for_status()
+        products = resp.json()
+        for product in products:
+            product['image_url'] = generate_sas_url(image_container, product['image_url'].split('/')[-1])
+        return products
+    except Exception as e:
+        logging.error(f"Failed to fetch product JSON: {e}")
+        return []
+
 # ---------------- Insert Order into SQL DB ----------------
 def insert_order(product_name, price):
     try:
@@ -92,8 +99,7 @@ def insert_order(product_name, price):
 @app.route('/')
 def home():
     try:
-        for product in products:
-            product['image_url'] = generate_sas_url(image_container, product['blob'])
+        products = fetch_products()
         html = fetch_html_from_blob('home.html')
         return render_template_string(html, products=products)
     except Exception as e:
@@ -104,11 +110,11 @@ def home():
 @app.route('/buy/<int:product_id>')
 def buy(product_id):
     try:
+        products = fetch_products()
         product = next((p for p in products if p["id"] == product_id), None)
         if not product:
             return "Product not found", 404
-        insert_order(product["name"], int(product["price"].replace("₹", "")))
-        product['image_url'] = generate_sas_url(image_container, product['blob'])
+        insert_order(product["name"], int(product["price"]))
         html = fetch_html_from_blob('delivery.html')
         return render_template_string(html, product=product)
     except Exception as e:

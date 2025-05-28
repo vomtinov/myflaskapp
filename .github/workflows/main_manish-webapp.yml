@@ -2,8 +2,7 @@ name: Build and deploy Python app to Azure Web App - manish-webapp
 
 on:
   push:
-    branches:
-      - main
+    branches: [ main ]
   workflow_dispatch:
 
 jobs:
@@ -39,7 +38,6 @@ jobs:
     needs: build
     environment:
       name: 'Production'
-      url: ${{ steps.deploy-to-webapp.outputs.webapp-url }}
     permissions:
       id-token: write
       contents: read
@@ -56,9 +54,27 @@ jobs:
       - name: Login to Azure
         uses: azure/login@v2
         with:
-          client-id: ${{ secrets.AZUREAPPSERVICE_CLIENTID_C51BE59D88C1493E9CD21045A97A3E4E }}
-          tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_C3C95011255F486B836ACE3706024D6A }}
-          subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_F55D1B10E58C4D07BC3C77A83F641B60 }}
+          client-id: ${{ secrets.AZUREAPPSERVICE_CLIENTID_… }}
+          tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_… }}
+          subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_… }}
+
+      # — new step: sync your HTML into the $web (static website) container —
+      - name: Upload HTML templates to $web
+        run: |
+          az storage blob upload-batch \
+            --account-name ${{ secrets.STORAGE_ACCOUNT_NAME }} \
+            --account-key  ${{ secrets.STORAGE_ACCOUNT_KEY }} \
+            --destination '$web' \
+            --source   templates/
+
+      # — new step: sync your product images into the images container —
+      - name: Upload product images to Blob Storage
+        run: |
+          az storage blob upload-batch \
+            --account-name ${{ secrets.STORAGE_ACCOUNT_NAME }} \
+            --account-key  ${{ secrets.STORAGE_ACCOUNT_KEY }} \
+            --destination images \
+            --source      static/images/
 
       - name: Deploy to Azure Web App
         uses: azure/webapps-deploy@v3

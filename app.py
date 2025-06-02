@@ -1,6 +1,7 @@
 import os
 import logging
 import json
+import re
 from datetime import datetime, timedelta
 
 import pyodbc
@@ -17,7 +18,7 @@ from azure.storage.queue import QueueClient
 logging.basicConfig(level=logging.INFO)
 app = Flask(__name__)
 
-# ---------------- Ensure Required Environment Variables ----------------
+# ---------------- Environment Variables ----------------
 required_env = [
     'STORAGE_ACCOUNT_NAME',
     'STORAGE_ACCOUNT_KEY',
@@ -26,36 +27,31 @@ required_env = [
     'SQL_DATABASE',
     'SQL_USERNAME',
     'SQL_PASSWORD',
-    'AzureWebJobsStorage',       # for queue connection
+    'AzureWebJobsStorage',
 ]
 missing = [key for key in required_env if key not in os.environ]
 if missing:
     raise RuntimeError(f"Missing required environment variables: {', '.join(missing)}")
 
-# These two are optional (defaults: $web and products)
 html_container    = os.environ.get('BLOB_CONTAINER_HTML', '$web')
 product_container = os.environ.get('BLOB_CONTAINER_PRODUCTS', 'products')
+account_name      = os.environ['STORAGE_ACCOUNT_NAME']
+account_key       = os.environ['STORAGE_ACCOUNT_KEY']
+image_container   = os.environ['BLOB_CONTAINER_IMAGES']
+sql_server        = os.environ['SQL_SERVER']
+sql_db            = os.environ['SQL_DATABASE']
+sql_user          = os.environ['SQL_USERNAME']
+sql_pass          = os.environ['SQL_PASSWORD']
+queue_name        = os.environ.get('ORDER_QUEUE', 'orders-queue')
+queue_conn_str    = os.environ['AzureWebJobsStorage']
 
-# Required ones
-account_name    = os.environ['STORAGE_ACCOUNT_NAME']
-account_key     = os.environ['STORAGE_ACCOUNT_KEY']
-image_container = os.environ['BLOB_CONTAINER_IMAGES']
-sql_server      = os.environ['SQL_SERVER']
-sql_db          = os.environ['SQL_DATABASE']
-sql_user        = os.environ['SQL_USERNAME']
-sql_pass        = os.environ['SQL_PASSWORD']
-
-# The queue name defaults to "orders-queue" if ORDER_QUEUE isn’t set
-queue_name      = os.environ.get('ORDER_QUEUE', 'orders-queue')
-queue_conn_str  = os.environ['AzureWebJobsStorage']
-
-# ---------------- Azure Blob Client ----------------
+# ---------------- Blob Client ----------------
 blob_service = BlobServiceClient(
     f"https://{account_name}.blob.core.windows.net",
     credential=account_key
 )
 
-# ---------------- Helper: Generate a SAS URL ----------------
+# ---------------- Helper: Generate SAS URL ----------------
 def generate_sas_url(container: str, blob_name: str, expiry_hours: int = 24) -> str:
     sas_token = generate_blob_sas(
         account_name=account_name,
@@ -67,7 +63,7 @@ def generate_sas_url(container: str, blob_name: str, expiry_hours: int = 24) -> 
     )
     return f"https://{account_name}.blob.core.windows.net/{container}/{blob_name}?{sas_token}"
 
-# ---------------- Helper: Fetch HTML Template from Blob ----------------
+# ---------------- Helper: Fetch HTML ----------------
 def fetch_html_from_blob(blob_name: str) -> str:
     sas_url = generate_sas_url(html_container, blob_name)
     logging.info(f"Fetching HTML from blob: {sas_url}")
@@ -75,37 +71,39 @@ def fetch_html_from_blob(blob_name: str) -> str:
     resp.raise_for_status()
     return resp.text
 
-# ---------------- Helper: Fetch Products JSON from Blob ----------------
+# ---------------- Helper: Fetch Products ----------------
 def fetch_products() -> list:
     sas_url = generate_sas_url(product_container, "product.json")
     logging.info(f"Fetching products JSON from blob: {sas_url}")
     resp = requests.get(sas_url)
     resp.raise_for_status()
     items = resp.json()
-    # Replace each product's image_url with a full SAS URL to the 'images' container
     for p in items:
         filename = p.get('image_url', '').split('/')[-1]
         p['image_url'] = generate_sas_url(image_container, filename)
     return items
 
-# ---------------- Helper: Enqueue Order into Azure Queue ----------------
+# ---------------- Helper: Enqueue Order ----------------
 def enqueue_order(product: dict):
-    # Build the JSON message
+    # Strip any non‐digits from product['price'], then cast to int
+    price_str = product.get('price', '')
+    # e.g. "₹1999" → "1999"
+    digits_only = re.sub(r'[^\d]', '', str(price_str))
+    price_int = int(digits_only)
+
     msg_payload = {
         "id":    product['id'],
         "name":  product['name'],
-        "price": int(product['price'])
+        "price": price_int
     }
     msg_text = json.dumps(msg_payload)
 
-    # Create the QueueClient from connection string + queue name
     queue_client = QueueClient.from_connection_string(queue_conn_str, queue_name)
     logging.info(f"Sending message to queue '{queue_name}': {msg_text}")
     queue_client.send_message(msg_text)
     logging.info(f"Enqueued order: {msg_text}")
 
-# ---------------- (Not used directly in web app) Insert Order to SQL -----------
-# Kept here for your Function to use
+# ---------------- (For Azure Function) Insert Order into SQL ----------------
 def insert_order(product_name: str, price: int):
     conn_str = (
         f"Driver={{ODBC Driver 17 for SQL Server}};"
@@ -152,10 +150,8 @@ def buy(product_id):
         enqueue_order(product)
         html = fetch_html_from_blob("delivery.html")
         return render_template_string(html, product=product)
-
     except Exception as e:
         logging.exception("Error in /buy route")
-        # Return the raw exception text for debugging; remove in production
         return f"🛑 500 in /buy: {e}", 500
 
 # ---------------- Health Check ----------------
@@ -163,6 +159,6 @@ def buy(product_id):
 def health():
     return "OK", 200
 
-# ---------------- Run Locally (Ignored on App Service) ----------------
+# ---------------- Run Locally ----------------
 if __name__ == '__main__':
     app.run(host="0.0.0.0", port=8000)

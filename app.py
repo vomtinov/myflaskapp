@@ -11,10 +11,10 @@ from azure.storage.blob import (
     generate_blob_sas,
     BlobSasPermissions
 )
-from azure.storage.queue import QueueClient
+from azure.storage.queue import QueueClient, BinaryBase64EncodePolicy
 
 # ── Logging ──
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 app = Flask(__name__)
 
 # ── Environment Variables ──
@@ -73,16 +73,15 @@ def fetch_products() -> list:
     resp.raise_for_status()
     items = resp.json()
 
-    # Convert each product’s “image_url” (just a filename) into a SAS‐signed URL
+    # Convert each product’s “image_url” (filename) into a SAS-signed URL
     for p in items:
         filename = p.get("image_url", "").split("/")[-1]
         p["image_url"] = generate_sas_url(image_container, filename)
     return items
 
-# ── Helper: Enqueue an Order ──
+# ── Helper: Enqueue an Order (Base64-encoded) ──
 def enqueue_order(product: dict):
     raw_price = product.get("price", "")
-    # Strip non-digits (e.g. “₹1999” → “1999”)
     digits_only = re.sub(r"[^\d]", "", str(raw_price))
     price_int = int(digits_only) if digits_only else 0
 
@@ -92,12 +91,15 @@ def enqueue_order(product: dict):
         "price": price_int
     }
     msg_text = json.dumps(msg_payload)
-    print("DEBUG - Queue Message:", repr(msg_text))  # <--- For debugging
+
+    # DEBUG: show exactly what we will send (optional)
+    print("DEBUG - Queue Message (plaintext):", repr(msg_text))
 
     queue_client = QueueClient.from_connection_string(queue_conn_str, queue_name)
-    logging.info(f"Sending message to queue '{queue_name}': {msg_text}")
-    queue_client.send_message(msg_text)
-    logging.info(f"✅ Enqueued order: {msg_text}")
+    # Use Base64 policy so that the Function can decode
+    queue_client.message_encode_policy = BinaryBase64EncodePolicy()
+    queue_client.send_message(queue_client.message_encode_policy.encode(content=msg_text.encode("utf-8")))
+    logging.info(f"✅ Enqueued order (base64): {msg_text}")
 
 # ── Home Route ──
 @app.route("/")
@@ -138,5 +140,6 @@ def buy(product_id):
 def health():
     return "OK", 200
 
+# ── Run Locally ──
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8000)

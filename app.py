@@ -4,7 +4,6 @@ import json
 import re
 from datetime import datetime, timedelta
 
-import pyodbc
 import requests
 from flask import Flask, render_template_string, request
 from azure.storage.blob import (
@@ -25,10 +24,6 @@ required_env = [
     "BLOB_CONTAINER_HTML",
     "BLOB_CONTAINER_IMAGES",
     "BLOB_CONTAINER_PRODUCTS",
-    "SQL_SERVER",
-    "SQL_DATABASE",
-    "SQL_USERNAME",
-    "SQL_PASSWORD",
     "AzureWebJobsStorage",
     "ORDER_QUEUE",
 ]
@@ -41,10 +36,6 @@ product_container  = os.environ["BLOB_CONTAINER_PRODUCTS"]   # e.g. "products"
 image_container    = os.environ["BLOB_CONTAINER_IMAGES"]     # e.g. "images"
 account_name       = os.environ["STORAGE_ACCOUNT_NAME"]
 account_key        = os.environ["STORAGE_ACCOUNT_KEY"]
-sql_server         = os.environ["SQL_SERVER"]
-sql_db             = os.environ["SQL_DATABASE"]
-sql_user           = os.environ["SQL_USERNAME"]
-sql_pass           = os.environ["SQL_PASSWORD"]
 queue_name         = os.environ["ORDER_QUEUE"]               # e.g. "orders-queue"
 queue_conn_str     = os.environ["AzureWebJobsStorage"]
 
@@ -93,7 +84,7 @@ def enqueue_order(product: dict):
     raw_price = product.get("price", "")
     # Strip non-digits (e.g. “₹1999” → “1999”)
     digits_only = re.sub(r"[^\d]", "", str(raw_price))
-    price_int = int(digits_only)
+    price_int = int(digits_only) if digits_only else 0
 
     msg_payload = {
         "id":    product["id"],
@@ -101,37 +92,16 @@ def enqueue_order(product: dict):
         "price": price_int
     }
     msg_text = json.dumps(msg_payload)
+    print("DEBUG - Queue Message:", repr(msg_text))  # <--- For debugging
 
     queue_client = QueueClient.from_connection_string(queue_conn_str, queue_name)
     logging.info(f"Sending message to queue '{queue_name}': {msg_text}")
     queue_client.send_message(msg_text)
     logging.info(f"✅ Enqueued order: {msg_text}")
 
-# ── (Optional) Insert Order into SQL ──
-def insert_order(product_name: str, price: int):
-    conn_str = (
-        f"Driver={{ODBC Driver 17 for SQL Server}};"
-        f"Server={sql_server};Database={sql_db};"
-        f"Uid={sql_user};Pwd={sql_pass};"
-        "Encrypt=yes;TrustServerCertificate=no;Connection Timeout=30;"
-    )
-    conn = pyodbc.connect(conn_str)
-    cur = conn.cursor()
-    cur.execute(
-        "INSERT INTO orders (product_name, price, status) VALUES (?, ?, ?)",
-        product_name, price, "Ordered"
-    )
-    conn.commit()
-    conn.close()
-    logging.info(f"✅ Inserted order into SQL: {product_name} @ ₹{price}")
-
 # ── Home Route ──
 @app.route("/")
 def home():
-    """
-    Renders `home.html` from the HTML container,
-    passing in the list of products (and filtering by query if present).
-    """
     try:
         q = request.args.get("q", "").lower().strip()
         products = fetch_products()
@@ -149,28 +119,13 @@ def home():
 # ── Buy Route ──
 @app.route("/buy/<int:product_id>")
 def buy(product_id):
-    """
-    1) Look up product by ID (from product.json in blob)
-    2) Enqueue that product into orders-queue
-    3) (Optionally) insert into SQL
-    4) Render “delivery.html” from blob
-    """
     try:
         products = fetch_products()
         product = next((p for p in products if p["id"] == product_id), None)
         if not product:
             return "Product not found", 404
 
-        # 1) Enqueue to Storage Queue
         enqueue_order(product)
-
-        # 2) Insert into SQL if desired (uncomment if you really want SQL writes here)
-        # raw_price = product.get("price", "")
-        # digits_only = re.sub(r"[^\d]", "", str(raw_price))
-        # price_int = int(digits_only)
-        # insert_order(product["name"], price_int)
-
-        # 3) Render “delivery.html” to confirm user’s order
         html = fetch_html_from_blob("delivery.html")
         return render_template_string(html, product=product)
 
@@ -183,7 +138,5 @@ def buy(product_id):
 def health():
     return "OK", 200
 
-# ── Run Locally ──
 if __name__ == "__main__":
-    # listens on port 8000, so you can visit http://localhost:8000/ in your browser
     app.run(host="0.0.0.0", port=8000)

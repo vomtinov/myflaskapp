@@ -11,11 +11,28 @@ from azure.storage.blob import (
     generate_blob_sas,
     BlobSasPermissions
 )
-from azure.storage.queue import QueueClient, BinaryBase64EncodePolicy
+from azure.storage.queue import QueueClient
 
-# ── Logging ──
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+# ── App and Logging ──
 app = Flask(__name__)
+
+# Application Insights Integration
+from opencensus.ext.azure.log_exporter import AzureLogHandler
+from opencensus.ext.azure.trace_exporter import AzureExporter
+from opencensus.ext.flask.flask_middleware import FlaskMiddleware
+
+instr_key = os.environ.get("APPINSIGHTS_INSTRUMENTATIONKEY")
+
+# Logging config
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+if instr_key:
+    logger.addHandler(AzureLogHandler(connection_string=f'InstrumentationKey={instr_key}'))
+    middleware = FlaskMiddleware(
+        app,
+        exporter=AzureExporter(connection_string=f'InstrumentationKey={instr_key}'),
+        sampler=None  # Optional: add ProbabilitySampler(rate=1.0) if needed
+    )
 
 # ── Environment Variables ──
 required_env = [
@@ -31,12 +48,12 @@ missing = [key for key in required_env if key not in os.environ]
 if missing:
     raise RuntimeError(f"Missing required environment variables: {', '.join(missing)}")
 
-html_container     = os.environ["BLOB_CONTAINER_HTML"]       # e.g. "$web"
-product_container  = os.environ["BLOB_CONTAINER_PRODUCTS"]   # e.g. "products"
-image_container    = os.environ["BLOB_CONTAINER_IMAGES"]     # e.g. "images"
+html_container     = os.environ["BLOB_CONTAINER_HTML"]
+product_container  = os.environ["BLOB_CONTAINER_PRODUCTS"]
+image_container    = os.environ["BLOB_CONTAINER_IMAGES"]
 account_name       = os.environ["STORAGE_ACCOUNT_NAME"]
 account_key        = os.environ["STORAGE_ACCOUNT_KEY"]
-queue_name         = os.environ["ORDER_QUEUE"]               # e.g. "orders-queue"
+queue_name         = os.environ["ORDER_QUEUE"]
 queue_conn_str     = os.environ["AzureWebJobsStorage"]
 
 # ── Blob Service Client ──
@@ -60,7 +77,7 @@ def generate_sas_url(container: str, blob_name: str, expiry_hours: int = 24) -> 
 # ── Helper: Fetch HTML from Blob ──
 def fetch_html_from_blob(blob_name: str) -> str:
     sas_url = generate_sas_url(html_container, blob_name)
-    logging.info(f"Fetching HTML from blob: {sas_url}")
+    logger.info(f"Fetching HTML from blob: {sas_url}")
     resp = requests.get(sas_url)
     resp.raise_for_status()
     return resp.text
@@ -68,18 +85,17 @@ def fetch_html_from_blob(blob_name: str) -> str:
 # ── Helper: Fetch Products JSON ──
 def fetch_products() -> list:
     sas_url = generate_sas_url(product_container, "product.json")
-    logging.info(f"Fetching products JSON from blob: {sas_url}")
+    logger.info(f"Fetching products JSON from blob: {sas_url}")
     resp = requests.get(sas_url)
     resp.raise_for_status()
     items = resp.json()
 
-    # Convert each product’s “image_url” (filename) into a SAS-signed URL
     for p in items:
         filename = p.get("image_url", "").split("/")[-1]
         p["image_url"] = generate_sas_url(image_container, filename)
     return items
 
-# ── Helper: Enqueue an Order (Base64-encoded) ──
+# ── Helper: Enqueue an Order ──
 def enqueue_order(product: dict):
     raw_price = product.get("price", "")
     digits_only = re.sub(r"[^\d]", "", str(raw_price))
@@ -91,15 +107,12 @@ def enqueue_order(product: dict):
         "price": price_int
     }
     msg_text = json.dumps(msg_payload)
-
-    # DEBUG: show exactly what we will send (optional)
-    print("DEBUG - Queue Message (plaintext):", repr(msg_text))
+    logger.info(f"Queue message: {msg_text}")  # Debug log
 
     queue_client = QueueClient.from_connection_string(queue_conn_str, queue_name)
-    # Use Base64 policy so that the Function can decode
-    queue_client.message_encode_policy = BinaryBase64EncodePolicy()
-    queue_client.send_message(queue_client.message_encode_policy.encode(content=msg_text.encode("utf-8")))
-    logging.info(f"✅ Enqueued order (base64): {msg_text}")
+    logger.info(f"Sending message to queue '{queue_name}'")
+    queue_client.send_message(msg_text)
+    logger.info(f"✅ Enqueued order: {msg_text}")
 
 # ── Home Route ──
 @app.route("/")
@@ -113,9 +126,10 @@ def home():
                 if q in p.get("name", "").lower() or q in p.get("category", "").lower()
             ]
         html = fetch_html_from_blob("home.html")
+        logger.info("Home route accessed")
         return render_template_string(html, products=products)
     except Exception as e:
-        logging.exception("🛑 Error in / (home) route")
+        logger.exception("🛑 Error in home()")
         return f"🛑 500 in home(): {e}", 500
 
 # ── Buy Route ──
@@ -129,17 +143,18 @@ def buy(product_id):
 
         enqueue_order(product)
         html = fetch_html_from_blob("delivery.html")
+        logger.info(f"Buy route accessed for product ID {product_id}")
         return render_template_string(html, product=product)
-
     except Exception as e:
-        logging.exception("🛑 Error in /buy route")
+        logger.exception("🛑 Error in buy()")
         return f"🛑 500 in /buy: {e}", 500
 
 # ── Health Check ──
 @app.route("/health")
 def health():
+    logger.info("Health check hit.")
     return "OK", 200
 
-# ── Run Locally ──
+# ── Run App ──
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8000)
